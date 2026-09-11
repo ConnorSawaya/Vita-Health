@@ -6,6 +6,14 @@ from datetime import datetime
 
 HISTORY_FILE = "ai_analysis_history.json"
 
+MOCK_ANALYSIS = """72 out of 100.
+Demo (offline) analysis — no OPENROUTER_API_KEY found, so this sample is shown instead of a live AI call.
+Product: Demo Hazelnut Cocoa Spread (sample data).
+- Calories ~539/100g, sugar ~56g (high), fat ~31g (high), protein ~6g.
+- Flag: high sugar + palm oil; allergens: milk, hazelnut, soy.
+- Healthier swap: no-added-sugar nut butter (score ~85/100).
+- Portion tip: 15g serving. Add OPENROUTER_API_KEY in .env for live analysis."""
+
 def save_history(barcode: str, product_name: str, ai_result: str):
     """Save the product analysis to a local JSON history file."""
     current_time = datetime.now()
@@ -33,6 +41,8 @@ def save_history(barcode: str, product_name: str, ai_result: str):
 def handle_follow_up(user_question: str):
     """Handles a follow-up question about the last scanned item."""
     api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return "Offline demo mode: add OPENROUTER_API_KEY in .env for live follow-ups."
     url = "https://ai.hackclub.com/proxy/v1/chat/completions"
     history = []
 
@@ -69,7 +79,10 @@ def handle_follow_up(user_question: str):
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     data = {"model": "x-ai/grok-4.1-fast", "messages": messages}
     
-    response = requests.post(url, headers=headers, json=data, timeout=20)
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=20)
+    except Exception as e:
+        return f"AI service unreachable (offline?): {e}"
     if response.status_code != 200:
         return f"AI service error ({response.status_code})."
 
@@ -85,13 +98,25 @@ def handle_follow_up(user_question: str):
 def ai_analysis(product_barcode: str) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY")
     url = "https://ai.hackclub.com/proxy/v1/chat/completions" 
+
+    if not product_barcode or not str(product_barcode).strip():
+        return "Empty barcode. Scan an item or use the demo button."
     
     # Step 1: Fetch product data
-    response = requests.get(f"https://world.openfoodfacts.org/api/v0/product/{product_barcode}.json")
+    try:
+        response = requests.get(f"https://world.openfoodfacts.org/api/v0/product/{product_barcode}.json", timeout=15)
+    except Exception as e:
+        save_history(str(product_barcode), "Unknown (offline)", MOCK_ANALYSIS)
+        return MOCK_ANALYSIS + f" (network unreachable: {e})"
     if response.status_code != 200:
-        return f"Error fetching product data ({response.status_code})"
+        save_history(str(product_barcode), "Unknown (lookup blocked offline)", MOCK_ANALYSIS)
+        return MOCK_ANALYSIS + f" (product lookup HTTP {response.status_code}; showing demo analysis)"
     
-    product_data = response.json()
+    try:
+        product_data = response.json()
+    except Exception:
+        save_history(str(product_barcode), "Unknown (bad lookup response)", MOCK_ANALYSIS)
+        return MOCK_ANALYSIS + " (lookup response unreadable; showing demo analysis)"
     product_name = product_data.get('product', {}).get('product_name', 'Unknown')
     
     # Prompt for Ai analysis
@@ -122,7 +147,14 @@ Show the alternatives also with a health score out of 100. (no health bars, just
         "messages": [{"role": "user", "content": prompt}],
     }
 # Step 2: Call AI service
-    response = requests.post(url, headers=headers, json=data, timeout=20)
+    if not api_key:
+        save_history(str(product_barcode), product_name, MOCK_ANALYSIS)
+        return MOCK_ANALYSIS
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=20)
+    except Exception as e:
+        save_history(str(product_barcode), product_name, MOCK_ANALYSIS)
+        return MOCK_ANALYSIS + f" (network unreachable: {e})"
     if response.status_code != 200:
         return f"AI service error ({response.status_code}). Please try again later."
 

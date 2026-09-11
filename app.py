@@ -1,16 +1,29 @@
 
 #modules
-from pyzbar.pyzbar import decode
 import streamlit as st
-import cv2
 import os
 import json
+try:
+    from pyzbar.pyzbar import decode
+    PYZBAR_OK = True
+except Exception:
+    decode = None
+    PYZBAR_OK = False
+try:
+    import cv2
+    CV2_OK = True
+except Exception:
+    cv2 = None
+    CV2_OK = False
 import requests
-from ai import ai_analysis, handle_follow_up
+from ai import ai_analysis, handle_follow_up, MOCK_ANALYSIS
+SCANNER_OK = PYZBAR_OK and CV2_OK
 if "stuff" not in st.session_state:
     st.session_state.stuff = 0
 
 def scan_frame(frame):
+    if not SCANNER_OK:
+        return []
     barcodes = decode(frame)
     results = []
     for barcode in barcodes:
@@ -41,12 +54,29 @@ def main():
 
     # --- UI Stuff ---
     st.title("Vita Health")
+    if not SCANNER_OK:
+        st.warning("Scanner libraries (pyzbar/opencv) unavailable — running in DEMO mode. Use the demo button below; camera scanning needs a full desktop install.")
+    if not os.getenv("OPENROUTER_API_KEY"):
+        st.info("OFFLINE/MOCK mode: no OPENROUTER_API_KEY. Analyses use built-in sample data. Add the key in .env for live AI.")
+    if st.button("Load demo product (offline)"):
+        with st.spinner("Loading demo analysis..."):
+            try:
+                st.session_state.scan_history = load_scan_history()
+                from ai import save_history
+                save_history("3017620422003", "Demo: Nutella Hazelnut Spread", MOCK_ANALYSIS)
+            except Exception as e:
+                st.error(f"Demo load failed: {e}")
+        st.rerun()
 
     # Placeholder for video feed or results
     display_slot = st.empty()
 
     # --- Camera Loop & Scanning Logic ---
     if st.session_state.scanning:
+        if not SCANNER_OK:
+            st.error("Camera scanning unavailable in this install (missing pyzbar/opencv). Use the demo button instead.")
+            st.session_state.scanning = False
+            st.rerun()
         display_slot.info("Point camera at a barcode...")
         cap = cv2.VideoCapture(st.session_state.camera_choice)
         if not cap.isOpened():

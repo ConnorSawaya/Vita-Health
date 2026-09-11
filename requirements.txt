@@ -1,0 +1,4 @@
+streamlit>=1.32,<2
+opencv-python>=4.8,<5
+pyzbar>=0.1.9
+requests>=2.31,<3
