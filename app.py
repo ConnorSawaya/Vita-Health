@@ -2,7 +2,6 @@
 #modules
 import streamlit as st
 import os
-import json
 try:
     from pyzbar.pyzbar import decode
     PYZBAR_OK = True
@@ -15,11 +14,12 @@ try:
 except Exception:
     cv2 = None
     CV2_OK = False
-import requests
-from ai import ai_analysis, handle_follow_up, MOCK_ANALYSIS
+from ai import add_scan_to_history, ai_analysis, handle_follow_up, MOCK_ANALYSIS
 SCANNER_OK = PYZBAR_OK and CV2_OK
 if "stuff" not in st.session_state:
     st.session_state.stuff = 0
+if "scan_history" not in st.session_state:
+    st.session_state.scan_history = []
 
 def scan_frame(frame):
     if not SCANNER_OK:
@@ -31,26 +31,12 @@ def scan_frame(frame):
         barcode_type = barcode.type
         results.append((barcode_data, barcode_type))
     return results
-HISTORY_FILE = "ai_analysis_history.json"
-def load_scan_history():
-    """Load history from the JSON file."""
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            try:
-                # Load and reverse the list so newest is first
-                return list(reversed(json.load(f)))
-            except (json.JSONDecodeError, IndexError):
-                return []
-    return []
 def main():
     # --- State Management ---
     if "scanning" not in st.session_state:
         st.session_state.scanning = False
     if "camera_choice" not in st.session_state:
         st.session_state.camera_choice = 0
-
-    # Load history from file on each run
-    st.session_state.scan_history = load_scan_history()
 
     # --- UI Stuff ---
     st.title("Vita Health")
@@ -60,12 +46,12 @@ def main():
         st.info("OFFLINE/MOCK mode: no OPENROUTER_API_KEY. Analyses use built-in sample data. Add the key in .env for live AI.")
     if st.button("Load demo product (offline)"):
         with st.spinner("Loading demo analysis..."):
-            try:
-                st.session_state.scan_history = load_scan_history()
-                from ai import save_history
-                save_history("3017620422003", "Demo: Nutella Hazelnut Spread", MOCK_ANALYSIS)
-            except Exception as e:
-                st.error(f"Demo load failed: {e}")
+            add_scan_to_history(
+                st.session_state.scan_history,
+                "3017620422003",
+                "Demo: Nutella Hazelnut Spread",
+                MOCK_ANALYSIS,
+            )
         st.rerun()
 
     # Placeholder for video feed or results
@@ -96,7 +82,7 @@ def main():
             results = scan_frame(cam_frame)
             if any(typ == "EAN13" for _, typ in results):
                 data, _ = next((d, t) for d, t in results if t == "EAN13")
-                ai_analysis(str(data)) # This saves to file
+                ai_analysis(str(data), st.session_state.scan_history)
                 st.session_state.scanning = False
                 break
         
@@ -136,8 +122,24 @@ def main():
         
         # Capture and handle chat input
         if prompt := st.chat_input("Ask a follow-up about the last scan..."):
-            handle_follow_up(prompt)
+            previous_chat_count = (
+                len(st.session_state.scan_history[0].get("chat_log", []))
+                if st.session_state.scan_history
+                else 0
+            )
+            message = handle_follow_up(prompt, st.session_state.scan_history)
+            current_chat_count = (
+                len(st.session_state.scan_history[0].get("chat_log", []))
+                if st.session_state.scan_history
+                else 0
+            )
+            st.session_state.follow_up_notice = (
+                message if current_chat_count == previous_chat_count else ""
+            )
             st.rerun()
+
+        if st.session_state.get("follow_up_notice"):
+            st.warning(st.session_state.follow_up_notice)
 
 if __name__ == "__main__":
     main()
