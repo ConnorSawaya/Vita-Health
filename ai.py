@@ -1,10 +1,7 @@
 #modules imported
 import os
-import json
 import requests
 from datetime import datetime
-
-HISTORY_FILE = "ai_analysis_history.json"
 
 MOCK_ANALYSIS = """72 out of 100.
 Demo (offline) analysis — no OPENROUTER_API_KEY found, so this sample is shown instead of a live AI call.
@@ -14,51 +11,30 @@ Product: Demo Hazelnut Cocoa Spread (sample data).
 - Healthier swap: no-added-sugar nut butter (score ~85/100).
 - Portion tip: 15g serving. Add OPENROUTER_API_KEY in .env for live analysis."""
 
-def save_history(barcode: str, product_name: str, ai_result: str):
-    """Save the product analysis to a local JSON history file."""
-    current_time = datetime.now()
-    formatted_time = current_time.strftime("%Y-%m-%d %H:%M")
-    history = []
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            try:
-                history = json.load(f)
-            except json.JSONDecodeError:
-                history = []
-
-    # Append new entry
-    history.append({
+def add_scan_to_history(history: list[dict], barcode: str, product_name: str, ai_result: str) -> dict:
+    """Keep a scan in the caller's session-owned history list."""
+    item = {
         "barcode": barcode,
         "product_name": product_name,
         "ai_result": ai_result,
         "chat_log": [],
-        "timestamp": formatted_time
-    })
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+    }
+    history.insert(0, item)
+    return item
 
-    # Save back to file
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
-def handle_follow_up(user_question: str):
+
+def handle_follow_up(user_question: str, history: list[dict]):
     """Handles a follow-up question about the last scanned item."""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         return "Offline demo mode: add OPENROUTER_API_KEY in .env for live follow-ups."
     url = "https://ai.hackclub.com/proxy/v1/chat/completions"
-    history = []
-
-    # 1. Load the entire history
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            try:
-                history = json.load(f)
-            except json.JSONDecodeError:
-                return "Error: History file is corrupted."
-    
     if not history:
         return "You need to scan an item first."
 
-    # 2. Get the most recent item for context
-    last_item = history[-1]
+    # The Streamlit caller passes only the current visitor's session history.
+    last_item = history[0]
     product_name = last_item["product_name"]
     initial_analysis = last_item["ai_result"]
     chat_log = last_item.get("chat_log", [])
@@ -88,14 +64,12 @@ def handle_follow_up(user_question: str):
 
     ai_response = response.json()["choices"][0]["message"]["content"]
 
-    # 5. Update and save the history
+    # Keep the conversation in this visitor's session-owned history only.
     last_item["chat_log"].append({"user": user_question, "ai": ai_response})
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
-
     return ai_response
 
-def ai_analysis(product_barcode: str) -> str:
+
+def ai_analysis(product_barcode: str, history: list[dict]) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY")
     url = "https://ai.hackclub.com/proxy/v1/chat/completions" 
 
@@ -106,16 +80,16 @@ def ai_analysis(product_barcode: str) -> str:
     try:
         response = requests.get(f"https://world.openfoodfacts.org/api/v0/product/{product_barcode}.json", timeout=15)
     except Exception as e:
-        save_history(str(product_barcode), "Unknown (offline)", MOCK_ANALYSIS)
+        add_scan_to_history(history, str(product_barcode), "Unknown (offline)", MOCK_ANALYSIS)
         return MOCK_ANALYSIS + f" (network unreachable: {e})"
     if response.status_code != 200:
-        save_history(str(product_barcode), "Unknown (lookup blocked offline)", MOCK_ANALYSIS)
+        add_scan_to_history(history, str(product_barcode), "Unknown (lookup blocked offline)", MOCK_ANALYSIS)
         return MOCK_ANALYSIS + f" (product lookup HTTP {response.status_code}; showing demo analysis)"
     
     try:
         product_data = response.json()
     except Exception:
-        save_history(str(product_barcode), "Unknown (bad lookup response)", MOCK_ANALYSIS)
+        add_scan_to_history(history, str(product_barcode), "Unknown (bad lookup response)", MOCK_ANALYSIS)
         return MOCK_ANALYSIS + " (lookup response unreadable; showing demo analysis)"
     product_name = product_data.get('product', {}).get('product_name', 'Unknown')
     
@@ -148,19 +122,18 @@ Show the alternatives also with a health score out of 100. (no health bars, just
     }
 # Step 2: Call AI service
     if not api_key:
-        save_history(str(product_barcode), product_name, MOCK_ANALYSIS)
+        add_scan_to_history(history, str(product_barcode), product_name, MOCK_ANALYSIS)
         return MOCK_ANALYSIS
     try:
         response = requests.post(url, headers=headers, json=data, timeout=20)
     except Exception as e:
-        save_history(str(product_barcode), product_name, MOCK_ANALYSIS)
+        add_scan_to_history(history, str(product_barcode), product_name, MOCK_ANALYSIS)
         return MOCK_ANALYSIS + f" (network unreachable: {e})"
     if response.status_code != 200:
         return f"AI service error ({response.status_code}). Please try again later."
 
     result_text = response.json()["choices"][0]["message"]["content"]
 
-    # Step 3: Save to history
-    save_history(product_barcode, product_name, result_text)
+    add_scan_to_history(history, product_barcode, product_name, result_text)
 
     return result_text
